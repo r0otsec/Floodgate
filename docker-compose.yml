@@ -1,0 +1,191 @@
+name: floodgate
+
+networks:
+  it-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.10.0.0/24
+  ot-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.16.0.0/24
+
+services:
+  gateway:
+    build: ./containers/gateway
+    container_name: floodgate-gateway
+    hostname: gateway
+    networks:
+      it-net:
+        ipv4_address: 10.10.0.5
+      ot-net:
+        ipv4_address: 172.16.0.1
+    ports:
+      - "51820:51820/udp"
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      - net.ipv4.ip_forward=1
+    restart: unless-stopped
+
+  # ── PLC
+  openplc:
+    image: openplc/openplc_v3:latest
+    container_name: floodgate-openplc
+    hostname: openplc
+    networks:
+      ot-net:
+        ipv4_address: 172.16.0.10
+    ports:
+      - "502:502"
+      - "8181:8080"
+    volumes:
+      - ./containers/openplc/programs:/workdir/ST_files:ro
+      - ./containers/openplc/openplc-startup.sh:/startup.sh:ro
+    restart: unless-stopped
+
+  # ── PROCESS SIMULATION 
+  simulation:
+    build: ./containers/simulation
+    container_name: floodgate-simulation
+    hostname: simulation
+    networks:
+      ot-net:
+        ipv4_address: 172.16.0.11
+    depends_on:
+      - openplc
+    environment:
+      - PLC_HOST=172.16.0.10
+      - PLC_PORT=502
+      - SIM_INTERVAL=1.0
+    restart: unless-stopped
+
+  # ── SCADA WEB HMI 
+  web-hmi:
+    build: ./containers/web-hmi
+    container_name: floodgate-hmi
+    hostname: web-hmi
+    networks:
+      ot-net:
+        ipv4_address: 172.16.0.12
+    ports:
+      - "8080:8080"
+    depends_on:
+      - openplc
+    environment:
+      - PLC_HOST=172.16.0.10
+      - PLC_PORT=502
+    restart: unless-stopped
+
+  # ── MQTT BROKER
+  mqtt:
+    image: eclipse-mosquitto:2
+    container_name: floodgate-mqtt
+    hostname: mqtt
+    networks:
+      ot-net:
+        ipv4_address: 172.16.0.15
+    ports:
+      - "1883:1883"    
+      - "9001:9001"
+    volumes:
+      - ./containers/mqtt/mosquitto.${LAB_MODE:-vulnerable}.conf:/mosquitto/config/mosquitto.conf:ro
+    restart: unless-stopped
+
+  # ── OPC-UA SERVER 
+  opcua:
+    build: ./containers/opcua
+    container_name: floodgate-opcua
+    hostname: opcua
+    networks:
+      ot-net:
+        ipv4_address: 172.16.0.16
+    ports:
+      - "4840:4840"
+    environment:
+      - LAB_MODE=${LAB_MODE:-vulnerable}
+      - PLC_HOST=172.16.0.10
+      - PLC_PORT=502
+    restart: unless-stopped
+
+  # ── BACNET DEVICE (Facility BMS) 
+  bacnet:
+    build: ./containers/bacnet
+    container_name: floodgate-bacnet
+    hostname: bacnet
+    networks:
+      ot-net:
+        ipv4_address: 172.16.0.13
+    ports:
+      - "47808:47808/udp" 
+    environment:
+      - LAB_MODE=${LAB_MODE:-vulnerable}
+    restart: unless-stopped
+
+  # ── DNP3 OUTSTATION (Remote Pump Station RTU)
+  dnp3:
+    build: ./containers/dnp3
+    container_name: floodgate-dnp3
+    hostname: dnp3
+    networks:
+      ot-net:
+        ipv4_address: 172.16.0.14
+    ports:
+      - "20000:20000"
+    environment:
+      - LAB_MODE=${LAB_MODE:-vulnerable}
+      - PLC_HOST=172.16.0.10
+      - PLC_PORT=502
+    restart: unless-stopped
+
+  # ── S7 CHLORINATION SKID (Siemens SIMATIC) 
+  s7:
+    build: ./containers/s7
+    container_name: floodgate-s7
+    hostname: s7
+    networks:
+      ot-net:
+        ipv4_address: 172.16.0.17
+    ports:
+      - "102:102" 
+    environment:
+      - LAB_MODE=${LAB_MODE:-vulnerable}
+      - PLC_HOST=172.16.0.10
+      - PLC_PORT=502
+    restart: unless-stopped
+
+  # ── VULNERABLE SCADA WEB APP
+  scada-web:
+    build: ./containers/scada-web
+    container_name: floodgate-scada-web
+    hostname: scada-web
+    networks:
+      ot-net:
+        ipv4_address: 172.16.0.18
+    ports:
+      - "5000:5000"
+    environment:
+      - LAB_MODE=${LAB_MODE:-vulnerable}
+      - PLC_HOST=172.16.0.10
+      - PLC_PORT=502
+    restart: unless-stopped
+
+  attacker:
+    build: ./containers/attacker
+    container_name: floodgate-attacker
+    hostname: attacker
+    networks:
+      it-net:
+        ipv4_address: 10.10.0.99
+    volumes:
+      - ./challenges:/opt/floodgate:ro
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      - net.ipv4.ip_forward=1
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
